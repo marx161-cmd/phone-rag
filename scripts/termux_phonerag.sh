@@ -42,9 +42,12 @@ wait_result() {
   local waited=0
   while [ "$waited" -lt "$timeout" ]; do
     if root_sh "test -s $(sq "$RESULT")"; then
-      root_sh "cat $(sq "$RESULT")"
+      local output
+      output="$(root_sh "cat $(sq "$RESULT")")"
+      printf '%s\n' "$output"
       printf '\n'
-      return 0
+      result_is_ok "$output"
+      return $?
     fi
     sleep 1
     waited=$((waited + 1))
@@ -62,7 +65,12 @@ sq() {
 }
 
 root_sh() {
-  "$SU" -c "$1"
+  "$SU" -c "$1" </dev/null
+}
+
+result_is_ok() {
+  local json="$1"
+  printf '%s\n' "$json" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'
 }
 
 cmd_health() {
@@ -141,20 +149,13 @@ cmd_index() {
   local stamp
   stamp="$(date +%s)"
   local remote="$INBOX/$stamp-$(safe_name "$file")"
-  local title_file="$remote.title"
-  local source_file="$remote.source"
-  local tmp_title="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/phonerag-title-$$"
-  local tmp_source="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/phonerag-source-$$"
-  printf '%s' "$title" > "$tmp_title"
-  printf '%s' "$source" > "$tmp_source"
-  root_sh "cp $(sq "$file") $(sq "$remote") && cp $(sq "$tmp_title") $(sq "$title_file") && cp $(sq "$tmp_source") $(sq "$source_file")"
-  rm -f "$tmp_title" "$tmp_source"
+  root_sh "cp $(sq "$file") $(sq "$remote")"
   "$AM" start-foreground-service --user 0 \
     -n "$SERVICE" \
     -a "$PKG.INDEX" \
     --es text_file "$remote" \
-    --es title_file "$title_file" \
-    --es source_file "$source_file" >/dev/null
+    --es title "$title" \
+    --es source "$source" >/dev/null
   wait_result 600
 }
 
@@ -190,8 +191,7 @@ find_indexable_files() {
 
 cmd_index_dir() {
   if [ "$#" -eq 0 ]; then
-    usage
-    return 2
+    set -- .
   fi
 
   local count=0
