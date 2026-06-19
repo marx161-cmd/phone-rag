@@ -1,0 +1,20 @@
+.gradle/
+build/
+app/build/
+local.properties
+
+# Device/runtime artifacts
+Rag-crashlog.txt
+*.log
+*.db
+*.sqlite
+*.tflite
+sentencepiece.model
+
+# Native runtime binaries are intentionally provisioned locally, not published.
+app/src/main/jniLibs/**/*.so
+
+# Local/editor noise
+.idea/
+*.iml
+.DS_Store
