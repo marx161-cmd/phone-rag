@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.file.Files;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +26,10 @@ final class NativeNpuEmbeddingModel {
     static final String SIGNATURE = "embed_512";
 
     private final Context context;
+    private static final Object WORKER_LOCK = new Object();
+    private static Process workerProcess;
+    private static PrintWriter workerWriter;
+    private static BufferedReader workerReader;
 
     NativeNpuEmbeddingModel(Context context) {
         this.context = context.getApplicationContext();
@@ -60,6 +65,12 @@ final class NativeNpuEmbeddingModel {
         try {
             try (FileOutputStream out = new FileOutputStream(input)) {
                 out.write(text.getBytes(StandardCharsets.UTF_8));
+            }
+
+            try {
+                return embedWithResidentWorker(input);
+            } catch (Exception residentFailure) {
+                stopResidentWorker();
             }
 
             ProcessBuilder builder = new ProcessBuilder(
@@ -108,6 +119,96 @@ final class NativeNpuEmbeddingModel {
             //noinspection ResultOfMethodCallIgnored
             outputFile.delete();
         }
+    }
+
+    private synchronized List<Float> embedWithResidentWorker(File input) throws Exception {
+        synchronized (WORKER_LOCK) {
+            ensureResidentWorker();
+            workerWriter.println(input.getAbsolutePath());
+            workerWriter.flush();
+
+            long deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(5);
+            String line;
+            while (System.currentTimeMillis() < deadline && (line = workerReader.readLine()) != null) {
+                if (line.startsWith("EMBEDDING_JSON:")) {
+                    return parseEmbeddingJson(line.substring("EMBEDDING_JSON:".length()));
+                }
+                if (line.startsWith("EMBEDDING_ERROR:")) {
+                    throw new IllegalStateException(line);
+                }
+            }
+            throw new IllegalStateException("resident embedding worker timed out");
+        }
+    }
+
+    private void ensureResidentWorker() throws Exception {
+        if (workerProcess != null && workerProcess.isAlive() && workerWriter != null && workerReader != null) {
+            return;
+        }
+        stopResidentWorker();
+        ProcessBuilder builder = new ProcessBuilder(
+                workerFile(context).getAbsolutePath(),
+                "--model_path=" + MODEL_PATH,
+                "--dispatch_dir=" + dispatchDir(context),
+                "--signature=" + SIGNATURE,
+                "--tokenizer_path=" + TOKENIZER_PATH,
+                "--worker");
+        Map<String, String> env = builder.environment();
+        env.put("LD_LIBRARY_PATH", dispatchDir(context) + ":/vendor/lib64");
+        builder.redirectErrorStream(true);
+        workerProcess = builder.start();
+        workerWriter = new PrintWriter(workerProcess.getOutputStream(), true);
+        workerReader = new BufferedReader(new InputStreamReader(workerProcess.getInputStream(), StandardCharsets.UTF_8));
+
+        long deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(5);
+        StringBuilder startup = new StringBuilder();
+        String line;
+        while (System.currentTimeMillis() < deadline && (line = workerReader.readLine()) != null) {
+            startup.append(line).append('\n');
+            if (line.contains("EMBEDDING_READY")) {
+                return;
+            }
+        }
+        throw new IllegalStateException("resident embedding worker failed to start: " + trimOutput(startup));
+    }
+
+    void stopResidentWorker() {
+        synchronized (WORKER_LOCK) {
+            stopResidentWorkerLocked();
+        }
+    }
+
+    static boolean isResidentWorkerAlive() {
+        synchronized (WORKER_LOCK) {
+            return workerProcess != null && workerProcess.isAlive();
+        }
+    }
+
+    private static void stopResidentWorkerLocked() {
+        try {
+            if (workerWriter != null) workerWriter.close();
+        } catch (Exception ignored) {
+        }
+        try {
+            if (workerReader != null) workerReader.close();
+        } catch (Exception ignored) {
+        }
+        if (workerProcess != null) {
+            workerProcess.destroyForcibly();
+        }
+        workerProcess = null;
+        workerWriter = null;
+        workerReader = null;
+    }
+
+    private static List<Float> parseEmbeddingJson(String jsonLine) throws Exception {
+        JSONObject json = new JSONObject(jsonLine);
+        JSONArray values = json.getJSONArray("embedding");
+        List<Float> embedding = new ArrayList<>(values.length());
+        for (int i = 0; i < values.length(); i++) {
+            embedding.add((float) values.getDouble(i));
+        }
+        return embedding;
     }
 
     private static String trimOutput(StringBuilder output) {

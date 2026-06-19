@@ -10,6 +10,10 @@ RESULT="$BASE/last-result.json"
 
 AM="${AM:-/system/bin/am}"
 SU="${SU:-su}"
+CHUNK_SIZE=1800
+OVERLAP=180
+REPLACE_SOURCE=true
+REMAINING_ARGS=()
 
 usage() {
   cat >&2 <<'EOF'
@@ -19,9 +23,9 @@ usage:
   phonerag status
   phonerag query "text" [top_k]
   phonerag query-file FILE [top_k]
-  phonerag index FILE [title] [source]
-  phonerag index-dir DIR_OR_FILE [...]
-  phonerag index-paths FILE_WITH_PATHS
+  phonerag index [--chunk-size N] [--overlap N] [--append] FILE [title] [source]
+  phonerag index-dir [--chunk-size N] [--overlap N] [--append] [DIR_OR_FILE ...]
+  phonerag index-paths [--chunk-size N] [--overlap N] [--append] FILE_WITH_PATHS
   phonerag clear-result
 
 This is the phone-native Termux steering path. It talks to the Phone RAG APK
@@ -77,6 +81,53 @@ result_is_ok() {
   printf '%s\n' "$json" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'
 }
 
+parse_index_options() {
+  CHUNK_SIZE=1800
+  OVERLAP=180
+  REPLACE_SOURCE=true
+  REMAINING_ARGS=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --chunk-size)
+        CHUNK_SIZE="${2:-}"
+        shift 2
+        ;;
+      --chunk-size=*)
+        CHUNK_SIZE="${1#*=}"
+        shift
+        ;;
+      --overlap)
+        OVERLAP="${2:-}"
+        shift 2
+        ;;
+      --overlap=*)
+        OVERLAP="${1#*=}"
+        shift
+        ;;
+      --append)
+        REPLACE_SOURCE=false
+        shift
+        ;;
+      --replace)
+        REPLACE_SOURCE=true
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "unknown index option: $1" >&2
+        return 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  REMAINING_ARGS=("$@")
+}
+
 cmd_health() {
   ensure_dirs
   clear_result
@@ -85,7 +136,8 @@ cmd_health() {
 }
 
 cmd_start() {
-  am_cmd start --user 0 -n "$PKG/.MainActivity" >/dev/null
+  am_cmd start-foreground-service --user 0 -n "$SERVICE" >/dev/null
+  am_cmd start --user 0 -n "$PKG/.MainActivity" >/dev/null 2>&1 || true
 }
 
 cmd_status() {
@@ -139,6 +191,8 @@ cmd_query_file() {
 }
 
 cmd_index() {
+  parse_index_options "$@" || return $?
+  set -- "${REMAINING_ARGS[@]}"
   local file="${1:-}"
   local title="${2:-}"
   local source="${3:-}"
@@ -159,7 +213,10 @@ cmd_index() {
     -a "$PKG.INDEX" \
     --es text_file "$remote" \
     --es title "$title" \
-    --es source "$source" >/dev/null
+    --es source "$source" \
+    --ei chunk_size "$CHUNK_SIZE" \
+    --ei overlap "$OVERLAP" \
+    --ez replace_source "$REPLACE_SOURCE" >/dev/null
   wait_result 600
 }
 
@@ -194,6 +251,8 @@ find_indexable_files() {
 }
 
 cmd_index_dir() {
+  parse_index_options "$@" || return $?
+  set -- "${REMAINING_ARGS[@]}"
   if [ "$#" -eq 0 ]; then
     set -- .
   fi
@@ -203,7 +262,9 @@ cmd_index_dir() {
   while IFS= read -r -d '' file; do
     count=$((count + 1))
     echo "[$count] indexing $file" >&2
-    if cmd_index "$file" "$(basename "$file")" "$file"; then
+    local index_args=(--chunk-size "$CHUNK_SIZE" --overlap "$OVERLAP")
+    if [ "$REPLACE_SOURCE" = false ]; then index_args+=(--append); fi
+    if cmd_index "${index_args[@]}" "$file" "$(basename "$file")" "$file"; then
       :
     else
       failed=$((failed + 1))
@@ -216,6 +277,8 @@ cmd_index_dir() {
 }
 
 cmd_index_paths() {
+  parse_index_options "$@" || return $?
+  set -- "${REMAINING_ARGS[@]}"
   local list_file="${1:-}"
   if [ -z "$list_file" ] || [ ! -f "$list_file" ]; then
     usage
@@ -233,7 +296,9 @@ cmd_index_paths() {
     fi
     count=$((count + 1))
     echo "[$count] indexing $file" >&2
-    if cmd_index "$file" "$(basename "$file")" "$file"; then
+    local index_args=(--chunk-size "$CHUNK_SIZE" --overlap "$OVERLAP")
+    if [ "$REPLACE_SOURCE" = false ]; then index_args+=(--append); fi
+    if cmd_index "${index_args[@]}" "$file" "$(basename "$file")" "$file"; then
       :
     else
       failed=$((failed + 1))

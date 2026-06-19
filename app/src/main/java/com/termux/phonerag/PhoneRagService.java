@@ -276,8 +276,9 @@ public final class PhoneRagService extends Service {
                 request.put("text", text);
                 request.put("title", readExtraOrFile(intent, "title", "title_file"));
                 request.put("source", readExtraOrFile(intent, "source", "source_file"));
-                request.put("chunk_size", intent.getIntExtra("chunk_size", 1000));
-                request.put("overlap", intent.getIntExtra("overlap", 120));
+                request.put("chunk_size", intent.getIntExtra("chunk_size", PhoneRagEngine.DEFAULT_CHUNK_SIZE));
+                request.put("overlap", intent.getIntExtra("overlap", PhoneRagEngine.DEFAULT_OVERLAP));
+                request.put("replace_source", intent.getBooleanExtra("replace_source", true));
                 result = engine.index(request);
                 result.put("action", PhoneRagReceiver.ACTION_INDEX);
             } else {

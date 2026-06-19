@@ -18,6 +18,10 @@ import java.util.List;
 
 final class PhoneRagEngine {
     static final int DIMENSIONS = 768;
+    static final int DEFAULT_CHUNK_SIZE = 1800;
+    static final int DEFAULT_OVERLAP = 180;
+    static final int MIN_CHUNK_SIZE = 120;
+    static final int MAX_CHUNK_SIZE = 4000;
     static final String MODEL_PATH = NativeNpuEmbeddingModel.MODEL_PATH;
     static final String TOKENIZER_PATH = NativeNpuEmbeddingModel.TOKENIZER_PATH;
 
@@ -41,6 +45,7 @@ final class PhoneRagEngine {
             json.put("ok", true);
             json.put("initialized", embedder != null);
         }
+        json.put("resident_worker_alive", NativeNpuEmbeddingModel.isResidentWorkerAlive());
         json.put("model_path", MODEL_PATH);
         json.put("model_exists", model.exists());
         json.put("model_size", model.exists() ? model.length() : 0);
@@ -69,8 +74,9 @@ final class PhoneRagEngine {
         }
         String title = request.optString("title", "");
         String source = request.optString("source", "");
-        int chunkSize = clamp(request.optInt("chunk_size", 300), 80, 512);
-        int overlap = clamp(request.optInt("overlap", 40), 0, Math.max(0, chunkSize / 2));
+        int chunkSize = clamp(request.optInt("chunk_size", DEFAULT_CHUNK_SIZE), MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
+        int overlap = clamp(request.optInt("overlap", DEFAULT_OVERLAP), 0, Math.max(0, chunkSize / 2));
+        boolean replaceSource = request.optBoolean("replace_source", true);
 
         ensureInitialized();
         writeStage("chunk_start");
@@ -85,12 +91,17 @@ final class PhoneRagEngine {
             writeStage("embed_done");
             database.beginTransaction();
             try {
+                if (replaceSource && !source.isEmpty()) {
+                    database.delete("chunks", "source = ?", new String[] {source});
+                }
                 for (int i = 0; i < chunks.size(); i++) {
                     ContentValues values = new ContentValues();
                     values.put("title", title);
                     values.put("source", source);
                     values.put("chunk_index", i);
                     values.put("chunk_count", chunks.size());
+                    values.put("chunk_size", chunkSize);
+                    values.put("overlap", overlap);
                     values.put("text", chunks.get(i));
                     values.put("embedding", floatsToBlob(embeddings.get(i)));
                     values.put("created_at", System.currentTimeMillis());
@@ -104,6 +115,9 @@ final class PhoneRagEngine {
             JSONObject json = health();
             json.put("ok", true);
             json.put("chunks_indexed", chunks.size());
+            json.put("chunk_size", chunkSize);
+            json.put("overlap", overlap);
+            json.put("replace_source", replaceSource);
             return json;
         }
     }
@@ -198,12 +212,27 @@ final class PhoneRagEngine {
                             + "source TEXT,"
                             + "chunk_index INTEGER,"
                             + "chunk_count INTEGER,"
+                            + "chunk_size INTEGER,"
+                            + "overlap INTEGER,"
                             + "text TEXT NOT NULL,"
                             + "embedding BLOB NOT NULL,"
                             + "created_at INTEGER NOT NULL"
                             + ")");
+            ensureColumn(database, "chunks", "chunk_size", "INTEGER");
+            ensureColumn(database, "chunks", "overlap", "INTEGER");
             writeStage("after_sqlite_db");
         }
+    }
+
+    private static void ensureColumn(SQLiteDatabase database, String table, String column, String type) {
+        try (Cursor cursor = database.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+            while (cursor.moveToNext()) {
+                if (column.equals(cursor.getString(1))) {
+                    return;
+                }
+            }
+        }
+        database.execSQL("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
     }
 
     private File dbPath() {
