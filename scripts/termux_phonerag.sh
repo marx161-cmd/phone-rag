@@ -41,9 +41,9 @@ wait_result() {
   local timeout="${1:-120}"
   local waited=0
   while [ "$waited" -lt "$timeout" ]; do
-    if root_sh "test -s $(sq "$RESULT")"; then
-      local output
-      output="$(root_sh "cat $(sq "$RESULT")")"
+    local output
+    output="$(root_sh "cat $(sq "$RESULT") 2>/dev/null || true")"
+    if [ -n "$output" ]; then
       printf '%s\n' "$output"
       printf '\n'
       result_is_ok "$output"
@@ -68,6 +68,10 @@ root_sh() {
   "$SU" -c "$1" </dev/null
 }
 
+am_cmd() {
+  "$AM" "$@" </dev/null
+}
+
 result_is_ok() {
   local json="$1"
   printf '%s\n' "$json" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'
@@ -76,12 +80,12 @@ result_is_ok() {
 cmd_health() {
   ensure_dirs
   clear_result
-  "$AM" broadcast --user 0 -a "$PKG.HEALTH" -n "$RECEIVER" >/dev/null
+  am_cmd broadcast --user 0 -a "$PKG.HEALTH" -n "$RECEIVER" >/dev/null
   wait_result 20
 }
 
 cmd_start() {
-  "$AM" start --user 0 -n "$PKG/.MainActivity" >/dev/null
+  am_cmd start --user 0 -n "$PKG/.MainActivity" >/dev/null
 }
 
 cmd_status() {
@@ -92,7 +96,7 @@ cmd_status() {
   else
     echo "last_result=no"
   fi
-  "$AM" start-foreground-service --user 0 -n "$SERVICE" >/dev/null 2>&1 || true
+  am_cmd start-foreground-service --user 0 -n "$SERVICE" >/dev/null 2>&1 || true
   if command -v pidof >/dev/null 2>&1; then
     pidof "$PKG" || true
   fi
@@ -107,7 +111,7 @@ cmd_query() {
   fi
   ensure_dirs
   clear_result
-  "$AM" start-foreground-service --user 0 \
+  am_cmd start-foreground-service --user 0 \
     -n "$SERVICE" \
     -a "$PKG.QUERY" \
     --es query "$query" \
@@ -126,7 +130,7 @@ cmd_query_file() {
   clear_result
   local remote="$INBOX/query-$(date +%s)-$(safe_name "$file")"
   root_sh "cp $(sq "$file") $(sq "$remote")"
-  "$AM" start-foreground-service --user 0 \
+  am_cmd start-foreground-service --user 0 \
     -n "$SERVICE" \
     -a "$PKG.QUERY" \
     --es query_file "$remote" \
@@ -150,7 +154,7 @@ cmd_index() {
   stamp="$(date +%s)"
   local remote="$INBOX/$stamp-$(safe_name "$file")"
   root_sh "cp $(sq "$file") $(sq "$remote")"
-  "$AM" start-foreground-service --user 0 \
+  am_cmd start-foreground-service --user 0 \
     -n "$SERVICE" \
     -a "$PKG.INDEX" \
     --es text_file "$remote" \
