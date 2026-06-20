@@ -36,6 +36,27 @@ POST http://127.0.0.1:8791/index  {"text":"...","title":"...","source":"..."}
 POST http://127.0.0.1:8791/query  {"query":"...","top_k":6}
 ```
 
+Kai/Karl model tool:
+
+The Karl 9000 fork can expose Phone RAG as a model-callable
+`search_phone_context` tool through the chat top-bar storage toggle. When that
+toggle is off, the model cannot see or call the local Phone RAG index. When it is
+on, the model can explicitly search indexed phone files, transcripts, notes, and
+local context through the localhost `POST /query` endpoint.
+
+Karl no longer performs silent per-message context injection. Retrieved snippets
+only enter the chat when the model calls `search_phone_context`, and tool results
+include score, title, source/path metadata, and snippet text.
+
+Current Karl tool defaults:
+
+```text
+top_k=6
+min_score=0.0
+max returned matches=12
+max returned snippet length=1200 chars
+```
+
 Indexing defaults to 1800 character chunks with 180 characters of overlap.
 Pass `chunk_size`, `overlap`, and `replace_source` in the JSON body to override
 that. `replace_source=true` is the default, so reindexing the same source path
